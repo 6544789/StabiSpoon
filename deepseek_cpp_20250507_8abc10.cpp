@@ -1,0 +1,121 @@
+#include <Wire.h>
+#include <MPU6050.h>
+#include <Servo.h>
+
+// Hardware Configuration
+#define SERVO_X_PIN 9
+#define SERVO_Y_PIN 10
+#define BATTERY_PIN A0
+#define BUZZER_PIN 8
+
+// Constants
+const float BATTERY_MAX = 4.2;  // LiPo full charge voltage
+const float BATTERY_MIN = 3.3;  // LiPo cutoff voltage
+const int SERVO_NEUTRAL = 90;   // Center position
+
+// Objects
+MPU6050 mpu;
+Servo servoX, servoY;
+
+// PID Parameters
+float Kp = 1.2, Ki = 0.05, Kd = 0.3;
+float prevErrorX = 0, integralX = 0;
+float prevErrorY = 0, integralY = 0;
+
+void setup() {
+  // Initialize serial
+  Serial.begin(115200);
+  while (!Serial);
+  
+  // Initialize IMU
+  Wire.begin();
+  mpu.initialize();
+  if (!mpu.testConnection()) {
+    Serial.println("MPU6050 connection failed");
+    while (1);
+  }
+  mpu.calibrateGyro();
+  
+  // Attach servos
+  servoX.attach(SERVO_X_PIN);
+  servoY.attach(SERVO_Y_PIN);
+  servoX.write(SERVO_NEUTRAL);
+  servoY.write(SERVO_NEUTRAL);
+  
+  // Battery monitor
+  pinMode(BATTERY_PIN, INPUT);
+  
+  // Buzzer
+  pinMode(BUZZER_PIN, OUTPUT);
+  beep(3); // Startup beep
+}
+
+void loop() {
+  static unsigned long lastUpdate = 0;
+  unsigned long now = millis();
+  
+  // Update at 100Hz (10ms interval)
+  if (now - lastUpdate >= 10) {
+    lastUpdate = now;
+    
+    // 1. Read sensor data
+    mpu.update();
+    float angleX = mpu.getAngleX();
+    float angleY = mpu.getAngleY();
+    
+    // 2. Calculate PID outputs
+    float outputX = calculatePID(angleX, prevErrorX, integralX);
+    float outputY = calculatePID(angleY, prevErrorY, integralY);
+    
+    // 3. Move servos
+    servoX.write(SERVO_NEUTRAL + constrain(outputX, -45, 45));
+    servoY.write(SERVO_NEUTRAL + constrain(outputY, -45, 45));
+    
+    // 4. System monitoring
+    float batteryVoltage = getBatteryVoltage();
+    int batteryPercent = getBatteryPercent(batteryVoltage);
+    
+    // 5. Serial output
+    printDiagnostics(angleX, angleY, outputX, outputY, batteryVoltage);
+    
+    // 6. Low battery alert
+    if (batteryPercent < 15) {
+      beep(1);
+    }
+  }
+}
+
+float calculatePID(float input, float &prevError, float &integral) {
+  float error = -input; // Invert for correction
+  integral += error * 0.01; // dt = 10ms
+  float derivative = (error - prevError) / 0.01;
+  prevError = error;
+  return (Kp * error) + (Ki * integral) + (Kd * derivative);
+}
+
+float getBatteryVoltage() {
+  int raw = analogRead(BATTERY_PIN);
+  return raw * (5.0 / 1023.0) * 2.0; // Voltage divider R1=R2=10k
+}
+
+int getBatteryPercent(float voltage) {
+  return constrain(map(voltage * 100, BATTERY_MIN * 100, BATTERY_MAX * 100, 0, 100), 0, 100);
+}
+
+void printDiagnostics(float x, float y, float outX, float outY, float bat) {
+  Serial.print("IMU X:"); Serial.print(x,1); Serial.print("°");
+  Serial.print(" Y:"); Serial.print(y,1); Serial.print("°");
+  Serial.print(" | PID X:"); Serial.print(outX,1);
+  Serial.print(" Y:"); Serial.print(outY,1);
+  Serial.print(" | Bat:"); Serial.print(bat,2); Serial.print("V (");
+  Serial.print(getBatteryPercent(bat)); Serial.println("%)");
+}
+
+void beep(int count) {
+  for (int i=0; i<count; i++) {
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(100);
+    digitalWrite(BUZZER_PIN, LOW);
+    if (i < count-1) delay(100);
+  }
+}
